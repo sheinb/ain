@@ -32,7 +32,7 @@
 
 #include "ain_process.h"
 
-static void timer_tick(int sig, siginfo_t *si, void *uc);
+static void timer_tick(int sig);
 
 static void pabort(const char *s)
 {
@@ -97,6 +97,8 @@ typedef struct adc_info_s {
   uint8_t inversion_flag;	/* lower 4 bits control inv.  */
   Tcl_Interp *interp;
 } adc_info_t;
+
+adc_info_t *adc_info_ptr;	/* global available to timer  */
 
 #ifdef __USAGE
 %C - Driver for Microchip MCP320X A/D
@@ -450,66 +452,27 @@ void process_and_notify(adc_info_t *adc_info)
   return;
 }
 
-/*
- * source: https://opensource.com/article/21/10/linux-timers
- */
 static int timer_setup(adc_info_t *adc_info, int interval_ms)
 {
-  int res = 0;
-  timer_t timerId = 0;
-
-  struct sigevent sev = {0};
-
-  /* specifies the action when receiving a signal */
-  struct sigaction sa = {0};
-
-  /* specify start delay and interval */
-  struct itimerspec its = {.it_value.tv_sec = 0,
-                           .it_value.tv_nsec = interval_ms*1000000,
-                           .it_interval.tv_sec = 0,
-                           .it_interval.tv_nsec = interval_ms*1000000};
-
-  sev.sigev_notify = SIGEV_SIGNAL; // Linux-specific
-  sev.sigev_signo = SIGRTMIN;
-  sev.sigev_value.sival_ptr = adc_info;
-
-  /* create timer */
-  res = timer_create(CLOCK_MONOTONIC, &sev, &timerId);
-
-  if (res != 0)
-  {
-    return -1;
-  }
-
-  /* specify signal and handler */
-  sa.sa_flags = SA_SIGINFO;
-  sa.sa_sigaction = timer_tick;
-
-  /* Initialize signal */
-  sigemptyset(&sa.sa_mask);
-
-  /* Register signal handler */
-  if (sigaction(SIGRTMIN, &sa, NULL) == -1)
-  {
-    return -1;
-  }
-
-  /* start timer */
-  res = timer_settime(timerId, 0, &its, NULL);
-
-  if (res != 0)
-  {
-    return -1;
-  }
+  struct itimerval new_timer;
+  struct itimerval old_timer;
   
+  new_timer.it_value.tv_sec = 0;
+  new_timer.it_value.tv_usec = interval_ms*1000;
+  new_timer.it_interval.tv_sec = 0;
+  new_timer.it_interval.tv_usec = interval_ms*1000;
+  
+  setitimer(ITIMER_REAL, &new_timer, &old_timer);
+  signal(SIGALRM, timer_tick);
+
   return 0;
 }
 
-static void timer_tick(int sig, siginfo_t *si, void *uc)
+static void timer_tick(int sig)
 {
   sig = sig;
-  uc = uc;
-  adc_info_t *dinfo = (adc_info_t *)si->_sifields._rt.si_sigval.sival_ptr;
+
+  adc_info_t *dinfo = adc_info_ptr;
 
   static int count = 0;
   uint64_t timestamp;
@@ -650,6 +613,9 @@ int main(int argc, char *argv[])
     }
   }
 
+  /* set global pointer so timer can access */
+  adc_info_ptr = &adc_info;
+  
   /* This will be attached to the timer pulse callback */
   adc_info.n_channels = n_channels;
   adc_info.log_every = log_every;
