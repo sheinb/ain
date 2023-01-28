@@ -140,7 +140,7 @@ static void spi_xchange(adc_info_t *adc, uint8_t tx[],  uint8_t rx[], int n)
     pabort("can't send spi message");
 }
 
-void read_dac(adc_info_t *adcinfo)
+void read_adc(adc_info_t *adcinfo)
 {
   static unsigned char send[3], receive[3];
   int i;
@@ -478,7 +478,7 @@ static void timer_tick(int sig)
   uint64_t timestamp;
   uint16_t maxval = (1 << dinfo->resolution)-1;
   
-  read_dac(dinfo);
+  read_adc(dinfo);
   
   if (dinfo->inversion_flag & 0x01)
     dinfo->vals[0] = maxval-dinfo->vals[0];
