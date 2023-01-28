@@ -31,6 +31,7 @@
 #include <datapoint.h>
 
 #include "ain_process.h"
+#include "daemonizer.h"
 
 static void timer_tick(int sig);
 
@@ -724,6 +725,7 @@ int main(int argc, char *argv[])
   /* call our timer setup function above */
   timer_setup(&adc_info, interval_ms);
 
+  if (daemon) daemon_start("ain");
 
   for (;;) {
     sleep(100000);
