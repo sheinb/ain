@@ -19,9 +19,8 @@
 #include <linux/types.h>
 #include <linux/spi/spidev.h>
 #include <sys/time.h>
-
+#include <mqueue.h>
 #include <errno.h>
-
 #include <getopt.h>
 #include <math.h>
 
@@ -29,9 +28,12 @@
 #include <tcl.h>
 
 #include <datapoint.h>
-
+#include <qpcs_time.h>
+#include <dservapi.h>
 #include "ain_process.h"
 #include "daemonizer.h"
+
+#define DSERV_MQUEUE_NAME "/dserv"
 
 static void timer_tick(int sig);
 
@@ -41,12 +43,6 @@ static void pabort(const char *s)
   abort();
 }
 
-uint64_t now(void)
-{
-  struct timeval t;
-  gettimeofday(&t, NULL);
-  return t.tv_sec*1000000+t.tv_usec;
-}
 
 /*
  * processFunctions can be loaded from shared objects 
@@ -92,7 +88,7 @@ typedef struct adc_info_s {
   int show_every;
   int log_every;
   int use_dserv;
-  int ds_server_mqueue;
+  int dserv_mqueue;
   ds_datapoint_t *adc_dpoint;
   uint8_t resolution;           /* used to handle inversion   */
   uint8_t inversion_flag;	/* lower 4 bits control inv.  */
@@ -490,7 +486,7 @@ static void timer_tick(int sig)
   if (dinfo->inversion_flag & 0x08)
     dinfo->vals[3] = maxval-dinfo->vals[3];
   
-  timestamp = now();
+  timestamp = qpcs_now();
   dinfo->elapsed = timestamp-dinfo->timestamp;
   dinfo->last_timestamp = dinfo->timestamp;
   dinfo->timestamp = timestamp;
@@ -513,13 +509,20 @@ static void timer_tick(int sig)
   deliver_raw_events(dinfo);
 #endif
 
-#ifdef USE_DSERV  
   if (dinfo->use_dserv && dinfo->log_every && (count % dinfo->log_every == 0)) {
     memcpy(dinfo->adc_dpoint->data.buf, dinfo->vals, 4);
-    dinfo->adc_dpoint->timestamp = now();
-    dserv_set(&dinfo->ds_server,  dinfo->adc_dpoint);
+    dinfo->adc_dpoint->timestamp = qpcs_now();
+    
+    static char buf[DPOINT_BINARY_FIXED_LENGTH];
+    int size = DPOINT_BINARY_FIXED_LENGTH-1;
+    buf[0] = DPOINT_BINARY_MSG_CHAR;
+    dpoint_to_binary(dinfo->adc_dpoint, &buf[1], &size);
+      
+    if (mq_send(dinfo->dserv_mqueue, buf, sizeof(buf), 0) < 0) {
+	fprintf(stderr, "error writing to mqueue\n");
+    }
   }
-#endif
+
 }
 
 
@@ -633,7 +636,7 @@ int main(int argc, char *argv[])
   adc_info.resolution = 12;	/* adc range is 0-4096              */
   adc_info.inversion_flag = 0;	/* flip corresponding bit to invert */
   
-  adc_info.timestamp = now();
+  adc_info.timestamp = qpcs_now();
 
   
   snprintf(spi_device, 31, "/dev/spidev%d.%d", spi_channel, spi_device_id);
@@ -680,21 +683,18 @@ int main(int argc, char *argv[])
   if (verbose) {
 	  printf("ain: interval_ms = %d, speed = %d", interval_ms, adc_info.speed_hz);
   }
-#if 0
+
   if (log_every) {
     
     if (use_dserv) {
       // this is space for the four ADC vals
       unsigned short dserv_buf[4];
-      if (!dserv_login("/dev/dserv", &adc_info.ds_server)) {
-	exit(0);
-      }
-      adc_info.adc_dpoint = dpoint_new(ain_dpoint_name, now(),
+      adc_info.dserv_mqueue = mq_open(DSERV_MQUEUE_NAME, O_WRONLY);
+      adc_info.adc_dpoint = dpoint_new(ain_dpoint_name, qpcs_now(),
 				       DSERV_SHORT, 4,
 				       (unsigned char *) dserv_buf);
     }
   }
-#endif  
 
   adc_info.interp = init_tcl();
   if (!adc_info.interp) {
